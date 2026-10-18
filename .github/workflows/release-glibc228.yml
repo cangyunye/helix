@@ -1,0 +1,77 @@
+name: Build Linux Release (glibc 2.28 + UPX)
+
+on:
+  push:
+    tags:
+      - 'hx-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl
+
+      # x86_64：构建后立即打包（此时 runtime/grammars/*.so 为 x86_64）
+      - name: Build and package x86_64
+        run: |
+          set -euxo pipefail
+          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.28 -p helix-term
+          d=dist/helix-x86_64-glibc228-upx
+          mkdir -p "$d"
+          cp target/x86_64-unknown-linux-gnu/release/hx "$d/"
+          cp -a runtime "$d/runtime"
+          cp README.md LICENSE "$d/"
+          rm -rf "$d/runtime/grammars/sources"
+          find "$d/runtime/grammars" -maxdepth 1 -name '*.so' -exec strip {} + || true
+          upx --best --lzma "$d/hx"
+          tar czf dist/helix-x86_64-linux-glibc228-upx.tar.gz -C "$d" .
+
+      # aarch64：删除 x86_64 的 .so，强制 build.rs 按目标重编 grammar
+      - name: Build and package aarch64
+        run: |
+          set -euxo pipefail
+          rm -f runtime/grammars/*.so
+          cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28 -p helix-term
+          d=dist/helix-aarch64-glibc228-upx
+          mkdir -p "$d"
+          cp target/aarch64-unknown-linux-gnu/release/hx "$d/"
+          cp -a runtime "$d/runtime"
+          cp README.md LICENSE "$d/"
+          rm -rf "$d/runtime/grammars/sources"
+          find "$d/runtime/grammars" -maxdepth 1 -name '*.so' -exec strip {} + || true
+          upx --best --lzma "$d/hx"
+          tar czf dist/helix-aarch64-linux-glibc228-upx.tar.gz -C "$d" .
+
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          sha256sum helix-*-linux-glibc228-upx.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Helix Linux (glibc 2.28, UPX) ${{ github.ref_name }}"
+          files: |
+            dist/helix-x86_64-linux-glibc228-upx.tar.gz
+            dist/helix-aarch64-linux-glibc228-upx.tar.gz
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
