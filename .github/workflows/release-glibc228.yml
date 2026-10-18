@@ -1,4 +1,4 @@
-name: Build Linux Release (glibc 2.28 + UPX)
+name: Build Linux/Windows Release (glibc 2.28 + UPX)
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,19 +62,76 @@ jobs:
           upx --best --lzma "$d/hx"
           tar czf dist/helix-aarch64-linux-glibc228-upx.tar.gz -C "$d" .
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/*.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install UPX
+        run: choco install upx -y --no-progress
+
+      - name: Build x86_64 (MSVC)
+        run: cargo build --release --target x86_64-pc-windows-msvc -p helix-term
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $d = "dist/helix-x86_64-windows-upx"
+          New-Item -ItemType Directory -Force -Path $d | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/hx.exe $d/
+          Copy-Item -Recurse runtime "$d/runtime"
+          Copy-Item README.md, LICENSE $d/
+          if (Test-Path "$d/runtime/grammars/sources") { Remove-Item -Recurse -Force "$d/runtime/grammars/sources" }
+          # grammar dll 用 llvm-strip 去符号（失败则跳过），hx.exe 用 UPX 压缩
+          $strip = "C:\Program Files\LLVM\bin\llvm-strip.exe"
+          if (Test-Path $strip) {
+            Get-ChildItem "$d/runtime/grammars/*.dll" | ForEach-Object { & $strip $_.FullName 2>$null }
+          }
+          upx --best --lzma "$d/hx.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          tar -a -cf dist/helix-x86_64-windows-upx.zip -C $d .
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/*.zip
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: SHA256SUMS
         run: |
           cd dist
-          sha256sum helix-*-linux-glibc228-upx.tar.gz > SHA256SUMS.txt
+          sha256sum helix-x86_64-linux-glibc228-upx.tar.gz helix-aarch64-linux-glibc228-upx.tar.gz helix-x86_64-windows-upx.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: "Helix Linux (glibc 2.28, UPX) ${{ github.ref_name }}"
+          name: "Helix (glibc 2.28 / Windows, UPX) ${{ github.ref_name }}"
           files: |
             dist/helix-x86_64-linux-glibc228-upx.tar.gz
             dist/helix-aarch64-linux-glibc228-upx.tar.gz
+            dist/helix-x86_64-windows-upx.zip
             dist/SHA256SUMS.txt
           generate_release_notes: true
