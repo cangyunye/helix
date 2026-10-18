@@ -81,6 +81,10 @@ jobs:
       - name: Install UPX
         run: choco install upx -y --no-progress
 
+      # grammar 源码里含 Linux 符号链接，Windows 下禁用符号链接检出，避免悬空链接
+      - name: Disable git symlinks
+        run: git config --global core.symlinks false
+
       - name: Build x86_64 (MSVC)
         run: cargo build --release --target x86_64-pc-windows-msvc -p helix-term
 
@@ -90,10 +94,11 @@ jobs:
           $ErrorActionPreference = "Stop"
           $d = "dist/helix-x86_64-windows-upx"
           New-Item -ItemType Directory -Force -Path $d | Out-Null
+          # grammar 源码不打包（含悬空符号链接），复制前先删除
+          if (Test-Path "runtime/grammars/sources") { Remove-Item -Recurse -Force "runtime/grammars/sources" }
           Copy-Item target/x86_64-pc-windows-msvc/release/hx.exe $d/
           Copy-Item -Recurse runtime "$d/runtime"
           Copy-Item README.md, LICENSE $d/
-          if (Test-Path "$d/runtime/grammars/sources") { Remove-Item -Recurse -Force "$d/runtime/grammars/sources" }
           # grammar dll 用 llvm-strip 去符号（失败则跳过），hx.exe 用 UPX 压缩
           $strip = "C:\Program Files\LLVM\bin\llvm-strip.exe"
           if (Test-Path $strip) {
